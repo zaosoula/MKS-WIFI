@@ -1,74 +1,76 @@
-# Features
-Based on ESP8266 WIFI Module, Makerbase develp more useful function facing to the 3d printing:
+# MKS Robin WiFi (Custom Edition v1.0.4-CS)
 
-- Under local area network(LAN), using RepetierHost/pronterface,etc. 
+This is a custom, optimized version of the **MKS Robin WiFi** firmware (built for the ESP8266 / ESP-12S modules). It introduces critical network features, performance optimizations, and translation fixes to work seamlessly with modern web browsers and local dashboard applications.
 
-    As long as the IP and port of the wifi module are connected to the host computer, controling the printer can be realized without using a USB cable.
+---
 
-- Under local area network(LAN), using Cura slicer.
+## ⚡ Key Improvements (v1.0.4-CS)
 
-  Makerbase has developed the Cura plug-in——MKS Plugin, which can be used to transfer files and control printers after being installed on Cura. Since then, after slicing on Cura, the gcode file can be directly transmitted to the printer wirelessly, and the transmission speed is normally 100kBytes/s, which is very convenient.
-  
-- Control and monitor the printer through the MKS Cloud
+Compared to the factory Makerbase firmware, this edition includes:
 
-  Makerbase has specially developed cloud services for 3D printers and relative mobile apps, which not only provide model storage functions, but also support MKS WIFI link functions in the background. Users can upload model files to the server for free, or directly use the above model files.
-Using the mobile APP (MKS CLOUD), users can transfer the cloud model to the SD card or USB on the printer, and remotely control and monitor the printer.
+### 1. mDNS Local Domain Resolution
+* **What it does**: Starts an mDNS responder on the ESP8266.
+* **Benefit**: Access your printer's web interface at **`http://mkswifi.local`** or **`http://mkswifi`** instead of hunting for its dynamic IP address on your router.
 
+### 2. Bidirectional WebSockets (Port 81)
+* **What it does**: Spawns a dedicated WebSocket server on port `81`.
+* **Benefit**: Allows modern web dashboards (like our Web GUI) to establish direct, low-overhead connections right from the browser to read serial logs and send G-code wirelessly.
 
-# Hardware #
-Mks wifi has two types so far: mks robin wifi and mks tft wifi, actually they are the same eletronic connect with mcu of the host-board, just using different sockets. The wifi module is designed to connect to host-board with the following signals:
- - Uart Tx/Rx : for uart data transferring
- - Reset : for reseting the wifi by the host-board
- - GPIO4 : for the wifi module to read whether the host-board is ready to receive data on serial(low level valid)
- - GPIO0 : for switching the wifi module to boot mode(high level) or firmware flash mode(low level) by the host-board
- 
-For more details, you can refer to :[MKS WIFI hardware](https://github.com/makerbase-mks/MKS-WIFI/tree/master/hardware)
+### 3. TCP Socket Buffer Tuning (`HSPI` & `RepRapWebServer`)
+* **What it does**: Optimizes the serial-to-TCP bridge on port `8080` (used by Cura plugins and command line Netcat) and tuning socket queues.
+* **Benefit**: Dramatically reduces buffer drops, latency, and packet corruption during high-speed, intensive wireless G-code execution.
 
-# Firmware #
-## Release ##
-In the past, mks wifi firmware was released together with mks-robin or mks-tft firmware. In order to facilitate downloading, the wifi firmware version was pulled out separately from V1.0.4.
+### 4. Full English Translation & Cleanup
+* **What it does**: Replaces leftover Chinese characters in web portal pages, console responses, and connection logs with clean, standard English.
+* **Benefit**: Easy to audit and understand serial outputs in the console.
 
-## How to compile ##
-1. Install the Arduino IDE at the 1.6.8 level or later. [Arduino website](https://www.arduino.cc/en/software).
-2. Download the esp8266 core for arduion. As the core we use is based on [Duet3D's version](https://github.com/Duet3D/CoreESP8266), and have little modifation. So  using the [Esp8266 core official](https://github.com/esp8266/Arduino) may cause compile errors. Please directly download the [esp8266 core on MKS Github](https://github.com/makerbase-mks/Esp8266-Core-For-Arduino) to the arduino data path, eg, "C:\Users\xxx\AppData\Local\Arduino15\packages\esp8266\hardware\esp8266".
-3. Open Arduino IDE, open the MKS WIFI project
-4. Config the Tools menu:
- - Tools > select "Generic ESP8266 Module"
- - Tools > Flash Mode > select "DOUT"
- - Tools > Flash Size > select "4M(3M SPIFFS)"
- other options can be default.
-5. Click the Compile button and wait it finish
-6. If you connect the wifi module to PC, you can use the upload function of Arduino to flash the firmware; if not, you can directly copy the ".bin" file to the sd card, insert to the MKS robin series or TFT series board, it can automatically update the wifi firmware.
-  ** Hint: to export the "*.bin" file, you can click the Sketch > Export compiled Binary on Arduino, the ".bin" file will be exported to the project directory, remember rename the file to "MksWifi.bin" before copy it to sdcard.
+---
 
-## About the communication between the Wifi module and Host MCU ##
-Please refer to the document:https://github.com/makerbase-mks/MKS-WIFI/blob/master/Transfer%20protocal%20%20between%20ESP%20and%20MCU.docx
+## 🔌 Supported Connection Protocols
 
-# Compatibility with esp3d ?
-Esp3d is a well known wifi project in 3d printing , too. If you are using MKS Robin series or MKS TFT series, mks wifi firmware can make the transfer speed up to 100KBytes/s. If you are using other 2560 series board, Esp3d firmware is more suitable. Esp3d firmware also can runs on MKS WIFI hardware, but, the interface needs to be transferred to the AUX-1.
+1. **WebSocket (Port 81) [NEW]**: Standard WebSocket stream for browser-based client dashboard applications.
+2. **TCP Socket (Port 8080)**: Raw socket bridge. Connect wirelessly via command-line:
+   ```bash
+   nc mkswifi 8080
+   ```
+   *(Ensure only one client is connected to port 8080 at a time to prevent data corruption).*
 
-## NEWS ##
+---
 
-** V1.0.4 **
+## 🛠️ How to Compile
 
-1. Optimize the socket communication, realize wireless control and printing using RepetierHost/pronterface etc.
-2. Fix serval bugs.
+### Method A: Automatic Script (Recommended)
+You can compile automatically using the provided `compile.sh` bash script (requires `arduino-cli`):
+```bash
+chmod +x compile.sh
+./compile.sh
+```
+*Note: The script outputs the compiled binary directly to **`firmware_release/MksWifi.bin`** and cleans up temporary build files.*
+### Method B: Manual Arduino IDE
+1. Install **Arduino IDE** (v1.8.x recommended).
+2. Download and install the custom **MKS ESP8266 Core** (using the standard core might cause build issues):
+   [Esp8266 Core on MKS Github](https://github.com/makerbase-mks/Esp8266-Core-For-Arduino)
+   Extract it to your Arduino hardware package directory:
+   `C:\Users\<username>\AppData\Local\Arduino15\packages\esp8266\hardware\esp8266` (Windows) or `~/Library/Arduino15/packages/esp8266/hardware/esp8266` (macOS).
+3. Open `firmware_source/MksWifi/MksWifi.ino` in Arduino IDE.
+4. Set compiler configurations in **Tools**:
+   * **Board**: "Generic ESP8266 Module"
+   * **Flash Mode**: "DOUT"
+   * **Flash Size**: "4M (3M SPIFFS)"
+5. Click **Sketch > Export compiled Binary**.
 
-## How to update ##
+---
 
-- Extract the zip package and you will get a file of "mkswifi.bin"
-- Copy "mkswifi.bin" to the sdcard
-- Insert sdcard to the relative board(Robin series and mks tft series)
-- Reboot the board, firmware will updated automatically
+## 💾 How to Flash
 
-## Note
-- Thank you for using MKS products. If you have any questions during use, please contact us in time and we will work with you to solve it.
-- For more product dynamic information and tutorial materials, you can always follow MKS's Facebook/Twitter/Discord/Reddit/Youtube and Github. Thank you!
-- MKS Github: https://github.com/makerbase-mks  
-- MKS Facebook: https://www.facebook.com/Makerbase.mks/  
-- MKS Twitter: https://twitter.com/home?lang=en  
-- MKS Discord: https://discord.gg/4uar57NEyU
-- MKS Reddit: https://www.reddit.com/user/MAKERBASE-TEAM/ 
-![mks_link](https://user-images.githubusercontent.com/12979070/149612539-d630dc46-a1b8-4696-a534-2ab1ad050462.png)
+### Method A: Web Interface Upgrade (Wireless OTA - Recommended)
+1. Ensure your printer is powered on and connected to your local network.
+2. Open your web browser and navigate to **`http://mkswifi`** (or the printer's local IP address).
+3. Navigate to the **Update** page from the web portal menu.
+4. Upload the compiled **`MksWifi.bin`** file. The module will flash wirelessly and automatically restart.
 
-
+### Method B: SD Card Upgrade (Mainboard Bootstrap)
+1. Copy the compiled `.bin` file to your printer's SD card.
+2. Rename the file to **`MksWifi.bin`** (case-sensitive).
+3. Insert the SD card into your printer's mainboard (e.g. MKS Robin Nano) and power cycle the printer.
+4. The mainboard will automatically flash the firmware onto the WiFi module on startup.
