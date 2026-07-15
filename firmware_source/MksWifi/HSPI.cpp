@@ -188,7 +188,7 @@ void HSPIClass::setFrequency(uint32_t freq) {
                 break;
             } else if(calFreq < (int32_t) freq) {
                 // never go over the requested frequency
-                if(abs(freq - calFreq) < abs(freq - bestFreq)) {
+                if(abs((long)freq - (long)calFreq) < abs((long)freq - (long)bestFreq)) {
                     bestFreq = calFreq;
                     memcpy(&bestReg, &reg, sizeof(bestReg));
                 }
