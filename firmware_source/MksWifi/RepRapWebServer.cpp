@@ -231,7 +231,7 @@ void RepRapWebServer::_prepareHeader(String& response, int code, const char* con
     response += String(code);
     response += " ";
     response += _responseCodeToString(code);
-    response += "\r\nCache-Control: no-cache, no-store, must-revalidate\r\nPragma: no-cache\r\nExpires: 0\r\n";
+    response += "\r\nCache-Control: no-cache, no-store, must-revalidate\r\nPragma: no-cache\r\nExpires: 0\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: *\r\nAccess-Control-Allow-Methods: *\r\n";
 
     if (!content_type)
     {
@@ -327,7 +327,7 @@ void RepRapWebServer::sendContent(const uint8_t *content, size_t dataLength)
     char * chunkSize = (char *)malloc(11);
     if(chunkSize){
       sprintf(chunkSize, "%x%s", len, footer);
-      _currentClient.write((const uint8_t *)chunkSize, strlen(chunkSize), false);
+      _currentClient.write((const uint8_t *)chunkSize, strlen(chunkSize));
       free(chunkSize);
     }
   }
@@ -354,11 +354,11 @@ void RepRapWebServer::sendContent_P(PGM_P content, size_t size)
     char * chunkSize = (char *)malloc(11);
     if(chunkSize){
       sprintf(chunkSize, "%x%s", size, footer);
-      _currentClient.write((const uint8_t *)chunkSize, strlen(chunkSize), false);
+      _currentClient.write((const uint8_t *)chunkSize, strlen(chunkSize));
       free(chunkSize);
     }
   }
-  _currentClient.write_P(content, size, false);
+  _currentClient.write_P(content, size);
   if(_chunked){
     _currentClient.write(footer, 2);
   }

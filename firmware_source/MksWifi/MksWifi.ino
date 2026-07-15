@@ -1,4 +1,4 @@
-//#include <ArduinoJson.h>
+#include <ArduinoJson.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 //#include <DNSServer.h>
@@ -13,6 +13,7 @@
 //#include "SPITransaction.h"
 #include "Config.h"
 #include "gcode.h"
+#include <WebSocketsServer.h>
 //#include "tcp_handler.h";
 //#include "MksWifi.h"
 
@@ -87,6 +88,23 @@ RepRapWebServer server(80);
 WiFiServer tcp(8080);
 WiFiClient cloud_client;
 //DNSServer dns;
+
+// Forward declarations for package_gcode
+int package_gcode(String gcodeStr, boolean important = false);
+int package_gcode(char *dataField, boolean important = false);
+
+// Forward declarations for API handlers
+void handleConfig();
+void handleApiPrinter();
+void handleApiPrinterCtrl();
+void handleApiToolRelative();
+void handleApiBedRelative();
+void handleApiSendCmd();
+void handleApiChooseFileToPrint();
+void handleApiFileList();
+void handleApiPrint();
+void handleApiPrintInf();
+void handleApiLogs();
 String wifiConfigHtml;
 
 volatile bool verification_flag = false;
@@ -122,6 +140,147 @@ WiFiUDP node_monitor;
 #define TCP_FRAG_LEN	1400
 
 WiFiClient serverClients[MAX_SRV_CLIENTS];
+
+WebSocketsServer webSocket = WebSocketsServer(81);
+
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+	extern uint8_t dbgStr[100];
+	extern boolean printFinishFlag;
+	extern unsigned long socket_busy_stamp;
+
+	switch(type) {
+		case WStype_TEXT: {
+			init_queue(&cmd_queue);
+			cmd_index = 0;
+			memset(cmd_fifo, 0, sizeof(cmd_fifo));
+			
+			size_t j = 0;
+			while(j < length) {
+				if((payload[j] == '\r') || (payload[j] == '\n')) {
+					if((cmd_index) > 1) {
+						cmd_fifo[cmd_index] = '\n';
+						cmd_index++;
+						push_queue(&cmd_queue, cmd_fifo, cmd_index);
+					}
+					memset(cmd_fifo, 0, sizeof(cmd_fifo));
+					cmd_index = 0;
+				} else if(payload[j] == '\0') {
+					break;
+				} else {
+					if(cmd_index >= sizeof(cmd_fifo)) {
+						memset(cmd_fifo, 0, sizeof(cmd_fifo));
+						cmd_index = 0;
+					}
+					cmd_fifo[cmd_index] = payload[j];
+					cmd_index++;
+				}
+				j++;
+				do_transfer();
+				yield();
+			}
+			if (cmd_index > 0) {
+				cmd_fifo[cmd_index] = '\n';
+				cmd_index++;
+				push_queue(&cmd_queue, cmd_fifo, cmd_index);
+			}
+
+			char cmd_line[100] = {0};
+			String gcodeM3 = "";
+			while(pop_queue(&cmd_queue, cmd_line, sizeof(cmd_line)) >= 0) {
+				if((strchr((const char *)cmd_line, 'G') != 0) 
+					|| (strchr((const char *)cmd_line, 'M') != 0)
+					|| (strchr((const char *)cmd_line, 'T') != 0))
+				{
+					if(strchr((const char *)cmd_line, '\n') != 0 ) {
+						String gcode((const char *)cmd_line);
+
+						if(gcode.startsWith("M998") && (M3_TYPE == ROBIN)) {
+							net_print((const uint8_t *) "ok\r\n", strlen((const char *)"ok\r\n"));
+						}
+						else if(gcode.startsWith("M997")) {
+							if(gPrinterInf.print_state == PRINTER_IDLE)
+								strcpy((char *)dbgStr, "M997 IDLE\r\n");
+							else if(gPrinterInf.print_state == PRINTER_PRINTING)
+								strcpy((char *)dbgStr, "M997 PRINTING\r\n");
+							else if(gPrinterInf.print_state == PRINTER_PAUSE)
+								strcpy((char *)dbgStr, "M997 PAUSE\r\n");
+							else
+								strcpy((char *)dbgStr, "M997 NOT CONNECTED\r\n");
+						}
+						else if(gcode.startsWith("M27")) {
+							memset(dbgStr, 0, sizeof(dbgStr));
+							sprintf((char *)dbgStr, "M27 %d\r\n", gPrinterInf.print_file_inf.print_rate);
+						}
+						else if(gcode.startsWith("M992")) {
+							memset(dbgStr, 0, sizeof(dbgStr));
+							sprintf((char *)dbgStr, "M992 %02d:%02d:%02d\r\n", 
+								gPrinterInf.print_file_inf.print_hours, gPrinterInf.print_file_inf.print_mins, gPrinterInf.print_file_inf.print_seconds);
+						}
+						else if(gcode.startsWith("M994")) {
+							memset(dbgStr, 0, sizeof(dbgStr));
+							sprintf((char *)dbgStr, "M994 %s;%d\r\n", 
+								gPrinterInf.print_file_inf.file_name.c_str(), gPrinterInf.print_file_inf.file_size);
+						}
+						else if(gcode.startsWith("M115")) {
+							memset(dbgStr, 0, sizeof(dbgStr));
+							if(M3_TYPE == ROBIN)
+								strcpy((char *)dbgStr, "FIRMWARE_NAME:Robin\r\n");
+							else if(M3_TYPE == TFT28)
+								strcpy((char *)dbgStr, "FIRMWARE_NAME:TFT28/32\r\n");
+							else if(M3_TYPE == TFT24)
+								strcpy((char *)dbgStr, "FIRMWARE_NAME:TFT24\r\n");
+						}
+						else if(gcode.startsWith("M550")) {
+							memset(dbgStr, 0, sizeof(dbgStr));
+							strcpy((char *)dbgStr, "Printer name: Wanhao D12\r\n");
+						}
+						else if(gcode.startsWith("M552")) {
+							memset(dbgStr, 0, sizeof(dbgStr));
+							int32_t rssi = WiFi.RSSI();
+							int quality = (rssi <= -100) ? 0 : ((rssi >= -50) ? 100 : (2 * (rssi + 100)));
+							snprintf((char *)dbgStr, sizeof(dbgStr), "WiFi running, IP address: %s, SSID: %s, Signal: %d dBm (%d%%)\r\n", WiFi.localIP().toString().c_str(), ssid, (int)rssi, quality);
+						}
+						else if(gcode.startsWith("M554")) {
+							memset(dbgStr, 0, sizeof(dbgStr));
+							snprintf((char *)dbgStr, sizeof(dbgStr), "Gateway: %s\r\n", WiFi.gatewayIP().toString().c_str());
+						}
+						else {	
+							if(gPrinterInf.print_state == PRINTER_IDLE) {
+								if(gcode.startsWith("M23") || gcode.startsWith("M24")) {
+									gPrinterInf.print_state = PRINTER_PRINTING;
+									gPrinterInf.print_file_inf.file_name = "";
+									gPrinterInf.print_file_inf.file_size = 0;
+									gPrinterInf.print_file_inf.print_rate = 0;
+									gPrinterInf.print_file_inf.print_hours = 0;
+									gPrinterInf.print_file_inf.print_mins = 0;
+									gPrinterInf.print_file_inf.print_seconds = 0;
+									printFinishFlag = false;
+								}
+							}
+							gcodeM3.concat(gcode);
+						}
+					}
+				}
+				if(strlen((const char *)dbgStr) > 0) {
+					net_print((const uint8_t *) "ok\r\n", strlen((const char *)"ok\r\n"));
+					net_print((const uint8_t *) dbgStr, strlen((const char *)dbgStr));		
+					memset(dbgStr, 0, sizeof(dbgStr));			
+				}
+				do_transfer();
+				yield();
+			}
+			
+			if(gcodeM3.length() > 2) {
+				package_gcode(gcodeM3, true);
+				do_transfer();
+				socket_busy_stamp = millis();
+			}
+			break;
+		}
+		default:
+			break;
+	}
+}
 
 String monitor_tx_buf = "";
 String monitor_rx_buf = "";
@@ -406,18 +565,23 @@ bool smartConfig()
 
 void net_env_prepare()
 {
+	if (strlen(webhostname) == 0) {
+		strcpy(webhostname, "mkswifi");
+	}
 	if(currentState == OperatingState::Client)
 	{	
-	/*	if (mdns.begin(webhostname, WiFi.localIP()))
+		if (MDNS.begin(webhostname))
 		{
 			MDNS.addService("http", "tcp", 80);
-		}*/
+			MDNS.addService("ws", "tcp", 81);
+		}
 	}
 	else
 	{
-	//	if (mdns.begin(webhostname, WiFi.softAPIP()))
+		if (MDNS.begin(webhostname))
 		{
-		//	MDNS.addService("http", "tcp", 80);
+			MDNS.addService("http", "tcp", 80);
+			MDNS.addService("ws", "tcp", 81);
 		}
 	}
 	/*SSDP.setSchemaURL("description.xml");
@@ -438,7 +602,7 @@ void net_env_prepare()
 
 	
 	
-#if 0
+#if 1
 	
 	//self defined
 	server.on("/config", HTTP_ANY, handleConfig, NULL);
@@ -481,11 +645,10 @@ void net_env_prepare()
 	server.begin();
 	tcp.begin();
 
-	
-	
-  	node_monitor.begin(UDP_PORT);
+	webSocket.begin();
+	webSocket.onEvent(webSocketEvent);
 
-	
+  	node_monitor.begin(UDP_PORT);
 }
 
 void reply_search_handler()
@@ -562,7 +725,7 @@ void var_init()
 
 
 void setup() {
-
+	system_update_cpu_freq(160);
 	var_init();
 
 	Serial.begin(115200);
@@ -682,6 +845,8 @@ void net_print(const uint8_t *sbuf, uint32_t len)
 		
 	  }
 	}
+
+	webSocket.broadcastTXT(sbuf, len);
 }
 
 void query_printer_inf()
@@ -785,6 +950,8 @@ int get_printer_reply()
 
 void loop()
 {
+	webSocket.loop();
+	MDNS.update();
 	int i;
 
 	//output_json();
@@ -1086,6 +1253,23 @@ void loop()
 												//	net_print((const uint8_t *) dbgStr, strlen((const char *)dbgStr));
 												//	net_print((const uint8_t *) "ok\r\n", strlen((const char *)"ok\r\n"));
 												}
+												else if(gcode.startsWith("M550"))
+												{
+													memset(dbgStr, 0, sizeof(dbgStr));
+													strcpy((char *)dbgStr, "Printer name: Wanhao D12\r\n");
+												}
+												else if(gcode.startsWith("M552"))
+												{
+													memset(dbgStr, 0, sizeof(dbgStr));
+													int32_t rssi = WiFi.RSSI();
+													int quality = (rssi <= -100) ? 0 : ((rssi >= -50) ? 100 : (2 * (rssi + 100)));
+													snprintf((char *)dbgStr, sizeof(dbgStr), "WiFi running, IP address: %s, SSID: %s, Signal: %d dBm (%d%%)\r\n", WiFi.localIP().toString().c_str(), ssid, (int)rssi, quality);
+												}
+												else if(gcode.startsWith("M554"))
+												{
+													memset(dbgStr, 0, sizeof(dbgStr));
+													snprintf((char *)dbgStr, sizeof(dbgStr), "Gateway: %s\r\n", WiFi.gatewayIP().toString().c_str());
+												}
 												/*else if(gcode.startsWith("M105"))
 												{
 													memset(dbgStr, 0, sizeof(dbgStr));
@@ -1331,6 +1515,7 @@ int package_net_para()
 	uart_send_package[dataLen + 4] = UART_PROTCL_TAIL;
 
 	uart_send_size = dataLen + 5;
+	return 0;
 }
 
 int package_static_ip_info()
@@ -1369,6 +1554,7 @@ int package_static_ip_info()
 	uart_send_package[UART_PROTCL_DATA_OFFSET + 16] = UART_PROTCL_TAIL;
 
 	uart_send_size = UART_PROTCL_DATA_OFFSET + 17;
+	return 0;
 }
 
 int package_gcode(String gcodeStr, boolean important)
@@ -2486,8 +2672,10 @@ bool TryToConnect()
 	{
 		EEPROM.get(BAK_ADDRESS_WIFI_MODE, wifi_mode);		
 		EEPROM.get(BAK_ADDRESS_WEB_HOST, webhostname);
-		//wifi_station_set_hostname(webhostname);     // must do thia before calling WiFi.begin()
-	
+		if (strlen(webhostname) == 0) {
+			strcpy(webhostname, "mkswifi");
+		}
+		WiFi.hostname(webhostname);
 	}
 	else
 	{
@@ -2661,6 +2849,40 @@ void onWifiConfig()
 
 	server.on("/", HTTP_GET, []() {
 		server.send(200, FPSTR(STR_MIME_TEXT_HTML), wifiConfigHtml);
+	});
+	server.on("/api/gcode", HTTP_GET, []() {
+		if (server.hasArg("cmd")) {
+			String cmd = server.arg("cmd");
+			if (!cmd.endsWith("\n")) {
+				cmd += "\n";
+			}
+			init_queue(&cmd_queue);
+			cmd_index = 0;
+			memset(cmd_fifo, 0, sizeof(cmd_fifo));
+			cmd.toCharArray(cmd_fifo, sizeof(cmd_fifo));
+			push_queue(&cmd_queue, cmd_fifo, cmd.length());
+			
+			char cmd_line[100] = {0};
+			String gcodeM3 = "";
+			while(pop_queue(&cmd_queue, cmd_line, sizeof(cmd_line)) >= 0) {
+				if((strchr((const char *)cmd_line, 'G') != 0) 
+					|| (strchr((const char *)cmd_line, 'M') != 0)
+					|| (strchr((const char *)cmd_line, 'T') != 0))
+				{
+					if(strchr((const char *)cmd_line, '\n') != 0 ) {
+						String gcode((const char *)cmd_line);
+						gcodeM3.concat(gcode);
+					}
+				}
+			}
+			if(gcodeM3.length() > 2) {
+				package_gcode(gcodeM3, true);
+				do_transfer();
+			}
+			server.send(200, "application/json", "{\"success\":true}");
+		} else {
+			server.send(400, "application/json", "{\"error\":\"Missing cmd param\"}");
+		}
 	});
 	server.on("/update_sketch", HTTP_GET, []() {
 		server.send(200, FPSTR(STR_MIME_TEXT_HTML), wifiConfigHtml);
@@ -3060,7 +3282,7 @@ void handleUpload()
 
 }
 
-#if 0
+#if 1
 void handleConfig()
 {
 	uint32_t postLength = server.getPostLength();
@@ -3653,6 +3875,7 @@ void handleApiFileList()
 	String uri = server.uri();
 	String path;
 	String gcodeStr;
+	String file1;
 	File dataFile;
 
 	char *head_end;
@@ -3784,89 +4007,35 @@ void handleApiFileList()
 	}
 #endif
 
-	if(save_in_file)
+	String json = "{\"files\":[";
+	while(gPrinterInf.sd_file_list.length() > 2)
 	{
-		head_end = "],\"free\":\"10M\"}";
-		dataFile.write((const uint8_t *)head_end, strlen((const char *)head_end));
+		if(gPrinterInf.sd_file_list.indexOf('\n') == -1)
+		{
+			file1 = gPrinterInf.sd_file_list;
+		}
+		else
+		{
+			file1 = gPrinterInf.sd_file_list.substring(0, gPrinterInf.sd_file_list.indexOf('\n'));
+		}
 
-		dataFile.seek(0, SeekSet);
-		server.streamFile(dataFile, FPSTR(STR_MIME_APPLICATION_JSON));
+		String type = "file";
+		if(file1.endsWith(".DIR"))
+		{
+			type = "dir";
+		}
 		
-		dataFile.close();
+		json += "{\"name\":\"" + file1 + "\",\"type\":\"" + type + "\"},";
 
-		gPrinterInf.sd_file_list.remove(0, gPrinterInf.sd_file_list.length());
+		gPrinterInf.sd_file_list = gPrinterInf.sd_file_list.substring(file1.length() + 1);
+		yield();
 	}
-	else
-	{
-		String list = gPrinterInf.sd_file_list;
-		while(list.indexOf('\n') != -1)
-		{
-			item_num++;
-			list = list.substring(list.indexOf('\n') + 1);
-		}
-		const size_t bufferSize = JSON_ARRAY_SIZE(item_num) + (item_num + 1) * JSON_OBJECT_SIZE(2) + gPrinterInf.sd_file_list.length() + strlen("name") * item_num + strlen("typefile") * item_num + 3 * (item_num + 2) + strlen("files") + strlen("free10M") - item_num;
-/*
-		Serial.print("item_num:");
-		Serial.println(item_num);
-		Serial.print("strLen:");
-		Serial.println(gPrinterInf.sd_file_list.length());
-		Serial.print("bufferSize:");
-		Serial.println(bufferSize);
-	*/
-		DynamicJsonBuffer rootJsonBuffer(bufferSize);
-		//StaticJsonBuffer<1024> rootJsonBuffer;
-
-
-		JsonObject& root = rootJsonBuffer.createObject();
-		JsonArray& files = root.createNestedArray("files");
-		root["free"] = "10M";
-		
-		if(gPrinterInf.sd_file_list.length() > LIST_MIN_LEN_SAVE_FILE)
-		{
-			gPrinterInf.sd_file_list.remove(LIST_MIN_LEN_SAVE_FILE, gPrinterInf.sd_file_list.length() - LIST_MIN_LEN_SAVE_FILE);
-		}
-
-		
-
-		while(gPrinterInf.sd_file_list.length() > 2)
-		{
-			if(gPrinterInf.sd_file_list.indexOf('\n') == -1)
-			{
-				file1 = gPrinterInf.sd_file_list;
-			}
-			else
-			{
-				file1 = gPrinterInf.sd_file_list.substring(0,gPrinterInf.sd_file_list.indexOf('\n'));
-			}
-
-			JsonObject& item = rootJsonBuffer.createObject();
-			item["name"] = file1;
-			
-
-			if(file1.endsWith(".DIR"))
-			{
-				item["type"] = "dir";
-			}
-			else
-			{
-				item["type"] = "file";
-			}
-			files.add(item);
-
-			gPrinterInf.sd_file_list = gPrinterInf.sd_file_list.substring(file1.length() + 1);
-
-
-
-			yield();
-		//	optimistic_yield(10000);
-		}
-
-		memset(jsBuffer, 0, sizeof(jsBuffer));
-		
-		root.printTo(jsBuffer, sizeof(jsBuffer));
-
-		server.send(200, FPSTR(STR_MIME_APPLICATION_JSON), FPSTR(jsBuffer));
+	if (json.endsWith(",")) {
+		json.remove(json.length() - 1);
 	}
+	json += "],\"free\":\"10M\"}";
+
+	server.send(200, FPSTR(STR_MIME_APPLICATION_JSON), json);
 	
 
 	

@@ -151,7 +151,7 @@ void MksHTTPUpdateServer::setup(RepRapWebServer *server,  const char * username,
 			else if(uri.startsWith("/update_spiffs") ||uri.startsWith("/update_web") )
 			{	
 				if(upload.filename.startsWith("MksWifi_WebView.bin"))
-					res = Update.begin(3 * 1024 * 1024, U_SPIFFS);
+					res = Update.begin(3 * 1024 * 1024, U_FS);
 				else
 				{
 					Update_result = UPDATE_FILE_ERROR;
